@@ -17,7 +17,7 @@ class ReplayR(object):
   DATE_RE = re.compile(r'\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}')
   URL_RE = re.compile(r'(GET|HEAD|POST|PUT) ([^\s]*)')
 
-  DATE_FMT = r'%d/%b/%Y:%H:%M%S'
+  DATE_FMT = r'%d/%b/%Y:%H:%M:%S'
 
   def __init__(self, socket_timeout=20, num_threads=15, domain="www.example.com"):
     self._socket_timeout = socket_timeout
@@ -84,7 +84,8 @@ class ThreadClass(threading.Thread):
           if offset > time_running:
             # The request doesn't have to be made yet so sleep until it needs to be
             print '%s Having a nap for %ss' %(self.getName(), offset-time_running)
-            time.sleep(time.mktime(offset.timetuple()) - time.mktime(time_running.timetuple()))
+            # assuming it's not more than a day between events, but then if it is we probably don't need to profile
+            time.sleep((offset - time_running).seconds)
             print '%s Processing %s [%s] %ss in, should run at %ss in' %(self.getName(), line_time, request_path, self.time_running(), offset)
           else:
             # The request needs to run now, there is a chance it may be behind as well
