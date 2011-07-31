@@ -38,8 +38,12 @@ class ReplayR(object):
       t.start()
 
   def _read_lines(self, logpath):
-    with open(logpath) as logfile:
-      return logfile.readlines()
+    logfile = None
+    try:
+      return open(logpath).readlines()
+    finally:
+      if logfile:
+        logfile.close()
 
   def parse_time(self, line):
     match = self.DATE_RE.search(line)
@@ -48,7 +52,7 @@ class ReplayR(object):
 
     return datetime.fromtimestamp(
       time.mktime(
-        time.strptime(match.group(1), self.DATE_FMT)
+        time.strptime(match.group(0), self.DATE_FMT)
       )
     )
 
@@ -90,9 +94,9 @@ class ThreadClass(threading.Thread):
           # Catch 404 errors and ignore as these are fine and part of the running process
           try:
             urllib2.urlopen('http://%s%s' % (self._replayr.domain, request_path))
-          except urllib2.HTTPError as e:
+          except urllib2.HTTPError, e:
             print "Caught HTTP %s Error" % e.code
-      except ParseError as e:
+      except ParseError, e:
         print e.message
 
   def time_running(self):
