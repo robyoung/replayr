@@ -1,92 +1,118 @@
 #!/usr/bin/env python
 
 import threading
-import datetime
 import time
+from datetime import datetime
 import re
-from datetime import date
 import urllib2
 import socket
+from optparse import OptionParser
 # set default socket timeout to 20s as unable to set timeout on urlopen in python 2.4.3
 socket.setdefaulttimeout(20)
-        
+
+class ParseError(Exception):
+  pass
+
+class ReplayR(object):
+  DATE_RE = re.compile(r'\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}')
+  URL_RE = re.compile(r'(GET|HEAD|POST|PUT) ([^\s]*)')
+
+  DATE_FMT = r'%d/%b/%Y:%H:%M%S'
+
+  def __init__(self, socket_timeout=20, num_threads=15, domain="www.example.com"):
+    self._socket_timeout = socket_timeout
+    socket.setdefaulttimeout(socket_timeout)
+    self.num_threads = num_threads
+    self.domain = domain
+
+  def run(self, logpath):
+    self.loglines = self._read_lines(logpath)
+    self.file_start = self.parse_time(self.loglines[0])
+    self.file_end = self.parse_time(self.loglines[-1])
+    self.run_start = datetime.now()
+
+    print "Processing %s lines (%s) of logs." % (len(self.loglines), self.file_end - self.file_start)
+
+    for i in range(self.num_threads):
+      t = ThreadClass(self, i)
+      t.start()
+
+  def _read_lines(self, logpath):
+    with open(logpath) as logfile:
+      return logfile.readlines()
+
+  def parse_time(self, line):
+    match = self.DATE_RE.search(line)
+    if not match:
+      raise ParseError("Failed to parse time from line.")
+
+    return datetime.fromtimestamp(
+      time.mktime(
+        time.strptime(match.group(1), self.DATE_FMT)
+      )
+    )
+
+  def parse_path(self, line):
+    match = self.URL_RE.search(line)
+    if not match:
+      raise ParseError("Failed to parse request.")
+    return match.group(1), match.group(2)
+
 class ThreadClass(threading.Thread):
+  def __init__(self, replayr, num):
+    super(ThreadClass, self).__init__(name="Thread-%s" % num)
+
+    self._replayr = replayr
+    self._num = num
+
   def run(self):
-    while len(loglines) > 0:
-      processline = loglines.pop()
-      linetime = re.search(dateregexstring, processline)
-      pathmatch = re.search(urlregexstring, processline)
+    while len(self._replayr.loglines) > 0:
+      processline = self._replayr.loglines.pop(0)
+      try:
+        line_time = self._replayr.parse_time(processline)
+        request_method, request_path = self._replayr.parse_path(processline)
 
-      # Check for pathmatch, if none possible POST/HEAD so ignore for now
-      # @todo match HEAD as well as GET, still ignore POST
-      if pathmatch:
-        fullpath = pathmatch.group()
-        # remove 'GET ' from path
-        path = fullpath[4:len(fullpath)]
-
-        if linetime:
-          offset = time.mktime(time.strptime(linetime.group(), '%d/%b/%Y:%H:%M:%S')) - time.mktime(time.strptime(starttime.group(), '%d/%b/%Y:%H:%M:%S'))
-
-          timerunning = time.time() - time.mktime(startedat)
-
-          if offset > timerunning:
+        if request_method not in ["GET", "HEAD"]:
+          print "Skipping %s request." % request_method
+        else:
+          offset = line_time - self._replayr.file_start
+          time_running = datetime.now() - self._replayr.run_start
+          if offset > time_running:
             # The request doesn't have to be made yet so sleep until it needs to be
-            print '%s Having a nap for %ss' %(self.getName(), offset-timerunning)
-            time.sleep(offset-timerunning)
-            timerunninglog = time.time() - time.mktime(startedat)
-            print '%s Processing %s [%s] %ss in, should run at %ss in' %(self.getName(), linetime.group(), path, timerunninglog, offset)
+            print '%s Having a nap for %ss' %(self.getName(), offset-time_running)
+            time.sleep(time.mktime(offset.timetuple()) - time.mktime(time_running.timetuple()))
+            print '%s Processing %s [%s] %ss in, should run at %ss in' %(self.getName(), line_time, request_path, self.time_running(), offset)
           else:
             # The request needs to run now, there is a chance it may be behind as well
             # @todo Only report behind if more than 500ms behind
-            timerunninglog = time.time() - time.mktime(startedat)
-            print '%s Behind processing %s [%s] %ss in, should run at %ss in' %(self.getName(), linetime.group(), path, timerunninglog, offset)
+            print '%s Behind processing %s [%s] %ss in, should run at %ss in' %(self.getName(), line_time, request_path, self.time_running(), offset)
 
           # Catch 404 errors and ignore as these are fine and part of the running process
           try:
-            urllib2.urlopen('http://'+domain+path)
-          except Exception:
-            print 'Caught HTTPError'
-        else:
-          print 'Unable to determine linetime from %s' %(processline)
-      else:
-	    print 'No pathmatch for %s' %(processline)
+            urllib2.urlopen('http://%s%s' % (self._replayr.domain, request_path))
+          except urllib2.HTTPError as e:
+            print "Caught HTTP %s Error" % e.code
+      except ParseError as e:
+        print e.message
 
+  def time_running(self):
+    return datetime.now() - self._replayr.run_start
 
-dateregexstring = '\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}'
-urlregexstring = 'GET [^\s]*'
-# @todo move domain into config file or cli parameter
-domain = 'www.example.com'
+if __name__ == "__main__":
+    parser = OptionParser()
+    parser.add_option("-t", "--socket-timeout", dest="timeout", default=20, type="int",
+                      help="Socket timeout")
+    parser.add_option("-n", "--num-threads", dest="threads", default=15, type="int",
+                      help="Number of threads to use.")
+    parser.add_option("-d", "--domain", dest="domain", default="www.example.com",
+                      help="Domain to run requests against.")
 
-# @todo move logfile into config file or cli parameter
-logfile = open('/nfs/personaldev/tsinger/download/web/access.2011-07-26-10-11.log')
-loglines = logfile.readlines()
-logfile.close()
+    (options, args) = parser.parse_args()
+    if not len(args):
+        raise Exception("Log file required")
 
-starttime = re.search(dateregexstring, loglines[0])
+    replayr = ReplayR(socket_timeout=options.timeout, num_threads=options.threads, domain=options.domain)
 
-# @todo throw exception if no starttime
-if starttime:
-    print 'Start Time: ', starttime.group()
-else:
-    print 'No start time'
+    # @todo handle multiple files
+    replayr.run(args[0])
 
-endtime = re.search(dateregexstring, loglines[len(loglines)-1])
-
-# @todo throw exception if no endtime
-if endtime:
-    print 'End Time: ', endtime.group()
-else:
-    print 'No end time'
-
-timediff = time.mktime(time.strptime(endtime.group(), '%d/%b/%Y:%H:%M:%S')) - time.mktime(time.strptime(starttime.group(), '%d/%b/%Y:%H:%M:%S'))
-
-print 'Processing %s lines (%ss) of logfiles' %(len(loglines), timediff)
-
-loglines.reverse()
-
-startedat = time.localtime()
-
-# @todo move number of threads into config file or cli parameter 
-for i in range(15):
-  t = ThreadClass()
-  t.start()
